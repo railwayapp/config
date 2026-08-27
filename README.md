@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: railwayapp/config-action@v1
+      - uses: railwayapp/config@v1
         with:
           command: plan
           railway-token: ${{ secrets.RAILWAY_TOKEN }}
@@ -40,7 +40,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
-      - uses: railwayapp/config-action@v1
+      - uses: railwayapp/config@v1
         with:
           command: apply
           railway-token: ${{ secrets.RAILWAY_TOKEN }}
