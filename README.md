@@ -48,11 +48,82 @@ jobs:
 
 Every PR touching `.railway/` gets a plan comment with the diff, marked when destructive. Merging is the approval: the apply job downloads the plan pinned to the PR's head commit and applies exactly that change set.
 
+### Split workflows
+
+The single-workflow layout above runs apply on the pull request's `closed` event, so the apply run doesn't show up on the merge commit itself. If you'd rather see a separately named apply run on your default branch, split it into two workflows — the action resolves the merged PR (and its pinned plan) from the pushed commit:
+
+```yaml
+# .github/workflows/railway-plan.yml
+name: Railway plan
+
+on:
+  pull_request:
+    paths: [".railway/**"]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  plan:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: railwayapp/config@v1
+        with:
+          command: plan
+          railway-token: ${{ secrets.RAILWAY_TOKEN }}
+```
+
+```yaml
+# .github/workflows/railway-apply.yml
+name: Railway apply
+
+on:
+  push:
+    branches: [main]
+    paths: [".railway/**"]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: railwayapp/config@v1
+        with:
+          command: apply
+          railway-token: ${{ secrets.RAILWAY_TOKEN }}
+```
+
+Direct pushes to `main` that never went through a PR have no pinned plan, so the apply fails by design — every change to `.railway/` goes through a reviewed plan.
+
+### Comment identity
+
+The plan comment is posted by whoever owns `github-token` — the default workflow token shows as **github-actions**. To post under your own bot name and avatar, mint a GitHub App installation token and pass it through:
+
+```yaml
+      - uses: actions/create-github-app-token@v1
+        id: app
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+      - uses: railwayapp/config@v1
+        with:
+          command: plan
+          railway-token: ${{ secrets.RAILWAY_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
+```
+
 ## Inputs
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `command` | — | `plan` (on PR) or `apply` (on merged PR) |
+| `command` | — | `plan` (on PR) or `apply` (on merged PR, or push of a merged PR's commit) |
 | `railway-token` | — | Railway project token for the target environment |
 | `cli-version` | `latest` | `@railway/cli` version to install |
 | `artifact-name` | `railway-plan` | Name of the plan artifact |

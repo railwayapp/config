@@ -10,7 +10,7 @@ branding:
 
 inputs:
   command:
-    description: "`plan` (on PR) or `apply` (on merged PR)."
+    description: "`plan` (on PR) or `apply` (on merged PR, or on push of a merged PR's commit)."
     required: true
   railway-token:
     description: Railway project token with access to the target environment.
@@ -96,22 +96,55 @@ runs:
         script: |
           const fs = require('fs');
           const plan = JSON.parse(fs.readFileSync('${{ inputs.plan-path }}', 'utf8'));
-          const diff = (plan.diff || 'already up to date').trimEnd();
-          const banner = plan.destructive
-            ? '> **Destructive:** this plan removes Railway resources or variables.\n\n'
-            : '';
-          const body = [
+
+          const changes = Array.isArray(plan.changeSet?.changes) ? plan.changeSet.changes.length : 0;
+          // The CLI marks creates '+', deletes '-', updates '~'. Remap '~' to '!'
+          // so GitHub's diff highlighting colors updates orange next to green/red.
+          const diff = (plan.diff || '').trimEnd().split('\n')
+            .map((line) => (line.startsWith('~') ? '!' + line.slice(1) : line))
+            .join('\n');
+
+          const logo = '<picture><source media="(prefers-color-scheme: dark)" srcset="https://railway.com/brand/logo-light.svg"><img src="https://railway.com/brand/logo-dark.svg" width="23" alt="Railway"></picture>';
+          const summary = changes === 0
+            ? 'No changes — the environment already matches `.railway/`.'
+            : '**' + changes + (changes === 1 ? ' change' : ' changes') + '** will apply on merge.';
+
+          const lines = [
             '<!-- railway-config-plan -->',
-            '## Railway config plan',
+            '### ' + logo + ' Railway config plan',
             '',
-            banner + 'Pinned to `.railway/` tree `' + plan.sourceTree + '` against etag `' + plan.configEtag + '`.',
+            summary,
+          ];
+          if (changes > 0) {
+            lines.push('', '```diff', diff, '```');
+          }
+          if (plan.destructive) {
+            lines.push(
+              '',
+              '> [!WARNING]',
+              '> This plan **removes resources or variables**. Merging applies the removals.'
+            );
+          }
+          lines.push(
             '',
-            'Merge applies **this** change set. If the environment moves or `.railway/` changes, apply fails and you re-plan.',
+            '<details>',
+            '<summary>Pinned plan — what merge will apply</summary>',
             '',
-            '```',
-            diff,
-            '```',
-          ].join('\n');
+            '| | |',
+            '|---|---|',
+            '| `.railway/` tree | `' + plan.sourceTree + '` |',
+            '| Environment etag | `' + plan.configEtag + '` |',
+            '| Change-set hash | `' + plan.changeSetHash + '` |',
+            '| Environment | `' + plan.environmentId + '` |',
+            '| CLI | `' + plan.cliVersion + '` |',
+            '',
+            'Merge applies exactly this change set. If the environment moves or `.railway/` changes first, the apply fails and the PR needs a fresh plan.',
+            '',
+            '</details>',
+            '',
+            '<sub>Posted by <a href="https://github.com/railwayapp/config">railwayapp/config</a> · <a href="https://docs.railway.com/infrastructure-as-code">Railway Infrastructure as Code</a></sub>'
+          );
+          const body = lines.join('\n');
           const { owner, repo } = context.repo;
           const number = context.issue.number;
           const { data: comments } = await github.rest.issues.listComments({
@@ -132,8 +165,14 @@ runs:
       run: |
         set -euo pipefail
         HEAD_SHA="$(jq -r '.pull_request.head.sha // empty' "$GITHUB_EVENT_PATH")"
+        if [ -z "$HEAD_SHA" ] && [ "$GITHUB_EVENT_NAME" = "push" ]; then
+          # Push-triggered apply (e.g. a separate workflow on the default branch):
+          # resolve the merged PR this commit came from to find its planned artifact.
+          HEAD_SHA="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+            --jq '[.[] | select(.merged_at != null)] | first | .head.sha // empty')"
+        fi
         if [ -z "$HEAD_SHA" ]; then
-          echo "apply must run on a merged pull_request event (closed + merged)." >&2
+          echo "apply needs a merged pull_request event, or a push of a commit that belongs to a merged PR." >&2
           exit 1
         fi
         # Look the artifact up by name and the PR head SHA it was planned on,
