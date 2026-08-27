@@ -98,11 +98,9 @@ runs:
           const plan = JSON.parse(fs.readFileSync('${{ inputs.plan-path }}', 'utf8'));
 
           const changes = Array.isArray(plan.changeSet?.changes) ? plan.changeSet.changes.length : 0;
-          // The CLI marks creates '+', deletes '-', updates '~'. Remap '~' to '!'
-          // so GitHub's diff highlighting colors updates orange next to green/red.
-          const diff = (plan.diff || '').trimEnd().split('\n')
-            .map((line) => (line.startsWith('~') ? '!' + line.slice(1) : line))
-            .join('\n');
+          // The CLI marks creates '+', deletes '-', updates '~'. In a diff block
+          // creates render green and deletes red; updates stay neutral.
+          const diff = (plan.diff || '').trimEnd();
 
           const logo = '<picture><source media="(prefers-color-scheme: dark)" srcset="https://railway.com/brand/logo-light.svg"><img src="https://railway.com/brand/logo-dark.svg" width="23" alt="Railway"></picture>';
           const summary = changes === 0
@@ -122,7 +120,7 @@ runs:
             lines.push(
               '',
               '> [!WARNING]',
-              '> This plan **removes resources or variables**. Merging applies the removals.'
+              '> This plan contains **destructive operations**: resources or variables currently in the environment will be deleted when this pull request merges. Review the change set above before approving.'
             );
           }
           lines.push(
