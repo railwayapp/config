@@ -98,18 +98,25 @@ runs:
           const plan = JSON.parse(fs.readFileSync('${{ inputs.plan-path }}', 'utf8'));
 
           const changes = Array.isArray(plan.changeSet?.changes) ? plan.changeSet.changes.length : 0;
-          // The CLI marks creates '+', deletes '-', updates '~'. In a diff block
-          // creates render green and deletes red; updates stay neutral.
-          const diff = (plan.diff || '').trimEnd();
+          // The CLI only marks whole-resource creates '+' and deletes '-';
+          // variable-level changes are all '~'. Remap those by verb so additions
+          // render green and removals red in the diff block.
+          const diff = (plan.diff || '').trimEnd().split('\n')
+            .map((line) => {
+              const verb = (line.match(/^~ (\w+)/) || [])[1]?.toLowerCase();
+              if (['delete', 'remove', 'unset'].includes(verb)) return '-' + line.slice(1);
+              if (['set', 'create', 'add'].includes(verb)) return '+' + line.slice(1);
+              return line;
+            })
+            .join('\n');
 
-          const logo = '<picture><source media="(prefers-color-scheme: dark)" srcset="https://railway.com/brand/logo-light.svg"><img src="https://railway.com/brand/logo-dark.svg" width="23" alt="Railway"></picture>';
           const summary = changes === 0
             ? 'No changes — the environment already matches `.railway/`.'
             : '**' + changes + (changes === 1 ? ' change' : ' changes') + '** will apply on merge.';
 
           const lines = [
             '<!-- railway-config-plan -->',
-            '### ' + logo + ' Railway config plan',
+            '### Railway config plan',
             '',
             summary,
           ];
