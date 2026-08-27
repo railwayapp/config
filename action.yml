@@ -88,8 +88,58 @@ runs:
         name: ${{ inputs.artifact-name }}
         path: ${{ inputs.plan-path }}
 
-    - name: Comment plan
+    # Posting under the official Railway bot identity: backboard composes and
+    # posts the comment through the Railway GitHub App. Requires `id-token:
+    # write` (proves this workflow runs in this repo) and the Railway app
+    # installed on the repo. Falls back to github-token posting below.
+    - name: Comment plan (Railway identity)
+      id: railway_comment
       if: inputs.command == 'plan' && inputs.comment == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        RAILWAY_TOKEN: ${{ inputs.railway-token }}
+      run: |
+        set -euo pipefail
+        posted=false
+        if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          OIDC="$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=railway" | jq -r '.value // empty' || true)"
+          if [ -n "$OIDC" ]; then
+            PR_NUMBER="$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
+            PAYLOAD="$(jq -c --arg oidc "$OIDC" --argjson pr "$PR_NUMBER" '{
+              query: "mutation($input: EnvironmentConfigPlanCommentUpsertInput!) { environmentConfigPlanCommentUpsert(input: $input) { url } }",
+              variables: { input: {
+                environmentId: .environmentId,
+                githubOidcToken: $oidc,
+                prNumber: $pr,
+                plan: {
+                  changes: ((.changeSet.changes // []) | map({ kind: .kind, summary: (.summary // "change") })),
+                  destructive: (.destructive // false),
+                  sourceTree: .sourceTree,
+                  configEtag: .configEtag,
+                  changeSetHash: .changeSetHash,
+                  cliVersion: .cliVersion
+                }
+              } }
+            }' "${{ inputs.plan-path }}")"
+            RESP="$(curl -sS -H "project-access-token: $RAILWAY_TOKEN" -H "Content-Type: application/json" \
+              -d "$PAYLOAD" https://backboard.railway.com/graphql/v2 || true)"
+            URL="$(echo "$RESP" | jq -r '.data.environmentConfigPlanCommentUpsert.url // empty' 2>/dev/null || true)"
+            if [ -n "$URL" ]; then
+              posted=true
+              echo "Posted plan comment under the Railway identity: $URL"
+            else
+              ERR="$(echo "$RESP" | jq -r '.errors[0].message // "no response"' 2>/dev/null || echo 'no response')"
+              echo "Railway-identity comment unavailable ($ERR); falling back to github-token."
+            fi
+          fi
+        else
+          echo "No id-token permission; posting with github-token. Grant 'id-token: write' for the Railway bot identity."
+        fi
+        echo "posted=$posted" >> "$GITHUB_OUTPUT"
+
+    - name: Comment plan
+      if: inputs.command == 'plan' && inputs.comment == 'true' && github.event_name == 'pull_request' && steps.railway_comment.outputs.posted != 'true'
       uses: actions/github-script@v7
       with:
         github-token: ${{ inputs.github-token }}

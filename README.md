@@ -107,7 +107,20 @@ Direct pushes to `main` that never went through a PR have no pinned plan, so the
 
 ### Comment identity
 
-The plan comment is posted by whoever owns `github-token` — the default workflow token shows as **github-actions**. To post under your own bot name and avatar, mint a GitHub App installation token and pass it through:
+With no extra setup, the plan comment is posted by whoever owns `github-token` — the default workflow token shows as **github-actions**.
+
+To post under the official **Railway** bot (the same identity as PR-environment deploy comments), grant the plan job `id-token: write` and have the [Railway GitHub App](https://github.com/apps/railway-app) installed on the repo:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+```
+
+The action sends a GitHub Actions OIDC token to Railway, which verifies that the workflow runs in this repo and posts the comment through the Railway GitHub App. No secrets beyond the `railway-token` you already provide. If the OIDC token or app installation is missing, the action falls back to posting with `github-token`.
+
+Alternatively, to post under your own bot, mint a GitHub App installation token and pass it as `github-token`:
 
 ```yaml
       - uses: actions/create-github-app-token@v1
