@@ -1,0 +1,161 @@
+name: Railway Config
+description: >-
+  Plan Railway Infrastructure as Code on pull requests and apply the reviewed
+  plan artifact on merge. Merge does not re-plan: a drifted environment or a
+  different .railway/ tree fails instead of applying an unreviewed diff.
+author: Railway
+branding:
+  icon: upload-cloud
+  color: purple
+
+inputs:
+  command:
+    description: "`plan` (on PR) or `apply` (on merged PR)."
+    required: true
+  railway-token:
+    description: Railway project token with access to the target environment.
+    required: true
+  cli-version:
+    description: "@railway/cli version to install."
+    required: false
+    default: latest
+  artifact-name:
+    description: Name of the uploaded plan artifact.
+    required: false
+    default: railway-plan
+  plan-path:
+    description: Path of the pinned plan file.
+    required: false
+    default: railway-plan.json
+  comment:
+    description: Post/update a plan comment on the pull request (plan only).
+    required: false
+    default: "true"
+  confirm-destructive:
+    description: >-
+      Pass --confirm-destructive on apply. The plan comment marks destructive
+      changes, so merging is the approval. Set to "false" to make destructive
+      applies fail instead.
+    required: false
+    default: "true"
+  github-token:
+    description: Token used to upload/download the plan artifact and comment.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate command
+      shell: bash
+      run: |
+        case "${{ inputs.command }}" in
+          plan|apply) ;;
+          *) echo "command must be 'plan' or 'apply', got '${{ inputs.command }}'" >&2; exit 1 ;;
+        esac
+
+    # The TypeScript authoring file is evaluated with node --experimental-strip-types,
+    # which needs node >= 22.6. This also provides npm for the CLI install.
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 24
+
+    - name: Install Railway CLI
+      shell: bash
+      run: npm install -g "@railway/cli@${{ inputs.cli-version }}"
+
+    - name: Install repository dependencies
+      if: inputs.command == 'plan'
+      shell: bash
+      run: |
+        if [ -f package-lock.json ]; then
+          npm ci --no-audit --no-fund
+        elif [ -f package.json ]; then
+          npm install --no-audit --no-fund
+        fi
+
+    - name: Plan
+      if: inputs.command == 'plan'
+      shell: bash
+      env:
+        RAILWAY_TOKEN: ${{ inputs.railway-token }}
+      run: railway config plan --out "${{ inputs.plan-path }}"
+
+    - name: Upload pinned plan
+      if: inputs.command == 'plan'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.plan-path }}
+
+    - name: Comment plan
+      if: inputs.command == 'plan' && inputs.comment == 'true' && github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require('fs');
+          const plan = JSON.parse(fs.readFileSync('${{ inputs.plan-path }}', 'utf8'));
+          const diff = (plan.diff || 'already up to date').trimEnd();
+          const banner = plan.destructive
+            ? '> **Destructive:** this plan removes Railway resources or variables.\n\n'
+            : '';
+          const body = [
+            '<!-- railway-config-plan -->',
+            '## Railway config plan',
+            '',
+            banner + 'Pinned to `.railway/` tree `' + plan.sourceTree + '` against etag `' + plan.configEtag + '`.',
+            '',
+            'Merge applies **this** change set. If the environment moves or `.railway/` changes, apply fails and you re-plan.',
+            '',
+            '```',
+            diff,
+            '```',
+          ].join('\n');
+          const { owner, repo } = context.repo;
+          const number = context.issue.number;
+          const { data: comments } = await github.rest.issues.listComments({
+            owner, repo, issue_number: number,
+          });
+          const existing = comments.find((c) => (c.body || '').includes('<!-- railway-config-plan -->'));
+          if (existing) {
+            await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+          } else {
+            await github.rest.issues.createComment({ owner, repo, issue_number: number, body });
+          }
+
+    - name: Download pinned plan
+      if: inputs.command == 'apply'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        HEAD_SHA="$(jq -r '.pull_request.head.sha // empty' "$GITHUB_EVENT_PATH")"
+        if [ -z "$HEAD_SHA" ]; then
+          echo "apply must run on a merged pull_request event (closed + merged)." >&2
+          exit 1
+        fi
+        # Look the artifact up by name and the PR head SHA it was planned on,
+        # so the consumer's workflow name doesn't matter.
+        ARTIFACT_ID="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=${{ inputs.artifact-name }}&per_page=100" \
+          --jq "[.artifacts[] | select(.workflow_run.head_sha==\"$HEAD_SHA\" and .expired==false)] | sort_by(.created_at) | last | .id // empty")"
+        if [ -z "$ARTIFACT_ID" ]; then
+          echo "No ${{ inputs.artifact-name }} artifact found for $HEAD_SHA. Wait for the plan job, or re-open the PR to re-plan." >&2
+          exit 1
+        fi
+        gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > /tmp/railway-plan-artifact.zip
+        unzip -o -d . /tmp/railway-plan-artifact.zip
+
+    - name: Apply pinned plan
+      if: inputs.command == 'apply'
+      shell: bash
+      env:
+        RAILWAY_TOKEN: ${{ inputs.railway-token }}
+      run: |
+        set -euo pipefail
+        FLAGS="--yes"
+        if [ "${{ inputs.confirm-destructive }}" = "true" ]; then
+          FLAGS="$FLAGS --confirm-destructive"
+        fi
+        railway config apply --plan "${{ inputs.plan-path }}" $FLAGS
