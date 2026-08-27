@@ -85,9 +85,12 @@ on:
     branches: [main]
     paths: [".railway/**"]
 
+# pull-requests: read lets the action resolve which merged PR the
+# pushed commit came from, to fetch that PR's pinned plan artifact.
 permissions:
   contents: read
   actions: read
+  pull-requests: read
 
 jobs:
   apply:
