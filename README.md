@@ -145,6 +145,7 @@ Alternatively, to post under your own bot, mint a GitHub App installation token 
 | `artifact-name` | `railway-plan` | Name of the plan artifact |
 | `plan-path` | `railway-plan.json` | Path of the pinned plan file |
 | `comment` | `true` | Post/update the PR plan comment (plan only) |
+| `package-manager` | `auto` | Package manager for installing repository dependencies in plan mode: `auto`, `npm`, `pnpm`, `yarn`, `bun` or `none` |
 | `confirm-destructive` | `true` | Allow destructive applies; the plan comment marks them, merge is the approval. Set `false` to make destructive applies fail |
 | `github-token` | `github.token` | Token for artifacts and the PR comment |
 
@@ -161,5 +162,6 @@ An empty change set applies as a no-op.
 
 - Requires the workflow permissions shown above: `pull-requests: write` for the comment, `actions: read` for the artifact download.
 - Fork PRs don't get secrets; the `head.repo.full_name == github.repository` guard skips them.
-- The action installs Node 24 (the TypeScript authoring file is evaluated with native type stripping) and runs `npm ci`/`npm install` in plan mode so `railway/iac` resolves.
+- The action installs Node 24 (the TypeScript authoring file is evaluated with native type stripping) and installs your repository's dependencies in plan mode so `railway/iac` resolves.
+- The package manager is detected, not assumed: `packageManager` in `package.json` first, then the lockfiles (`pnpm-lock.yaml`/`pnpm-workspace.yaml` → pnpm, `yarn.lock` → yarn, `bun.lockb`/`bun.lock` → bun, otherwise npm). pnpm and Yarn come from corepack, bun from `oven-sh/setup-bun`. Installs are lockfile-frozen when a lockfile is present. Override with `package-manager: pnpm` (or `none` to skip the install entirely, e.g. when a prior step already installed dependencies). The Railway CLI itself is always installed globally with npm, from outside the checkout, so a pnpm or Yarn workspace root can't interfere.
 - Plan artifacts follow your repository's artifact retention (90 days by default) — far longer than any reasonable PR-merge gap.

@@ -38,6 +38,13 @@ inputs:
       applies fail instead.
     required: false
     default: "true"
+  package-manager:
+    description: >-
+      Package manager used to install repository dependencies in plan mode:
+      `auto` (default) detects it from package.json `packageManager` and the
+      lockfiles, or pin it to `npm`, `pnpm`, `yarn`, `bun` or `none`.
+    required: false
+    default: auto
   github-token:
     description: Token used to upload/download the plan artifact and comment.
     required: false
@@ -62,17 +69,105 @@ runs:
 
     - name: Install Railway CLI
       shell: bash
+      working-directory: ${{ runner.temp }}
       run: npm install -g "@railway/cli@${{ inputs.cli-version }}"
 
-    - name: Install repository dependencies
+    - name: Detect package manager
+      id: pm
       if: inputs.command == 'plan'
       shell: bash
       run: |
-        if [ -f package-lock.json ]; then
-          npm ci --no-audit --no-fund
-        elif [ -f package.json ]; then
-          npm install --no-audit --no-fund
+        set -euo pipefail
+        pm="${{ inputs.package-manager }}"
+        if [ "$pm" = "auto" ]; then
+          pm=""
+          # package.json `packageManager` wins: it's what corepack enforces.
+          if [ -f package.json ]; then
+            pm="$(node -e 'try { const f = require("./package.json").packageManager; if (typeof f === "string") process.stdout.write(f.split("@")[0].trim()) } catch {}')"
+          fi
         fi
+        if [ -z "$pm" ]; then
+          if [ -f pnpm-lock.yaml ] || [ -f pnpm-workspace.yaml ]; then
+            pm=pnpm
+          elif [ -f yarn.lock ]; then
+            pm=yarn
+          elif [ -f bun.lockb ] || [ -f bun.lock ]; then
+            pm=bun
+          elif [ -f package.json ]; then
+            pm=npm
+          else
+            pm=none
+          fi
+        fi
+        case "$pm" in
+          npm|pnpm|yarn|bun|none) ;;
+          *) echo "Unsupported package manager '$pm'. Set package-manager to npm, pnpm, yarn, bun or none." >&2; exit 1 ;;
+        esac
+        echo "Installing repository dependencies with: $pm"
+        echo "manager=$pm" >> "$GITHUB_OUTPUT"
+
+    - name: Enable corepack
+      if: inputs.command == 'plan' && (steps.pm.outputs.manager == 'pnpm' || steps.pm.outputs.manager == 'yarn')
+      shell: bash
+      env:
+        COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      run: |
+        set -euo pipefail
+        PM="${{ steps.pm.outputs.manager }}"
+        corepack enable "$PM" || true
+        if ! command -v "$PM" >/dev/null 2>&1; then
+          npm install -g "$PM"
+        fi
+        "$PM" --version
+
+    - name: Install bun
+      if: inputs.command == 'plan' && steps.pm.outputs.manager == 'bun'
+      uses: oven-sh/setup-bun@v2
+
+    - name: Install repository dependencies
+      if: inputs.command == 'plan' && steps.pm.outputs.manager != 'none'
+      shell: bash
+      env:
+        COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      run: |
+        set -euo pipefail
+        case "${{ steps.pm.outputs.manager }}" in
+          pnpm)
+            if [ -f pnpm-lock.yaml ]; then
+              pnpm install --frozen-lockfile
+            else
+              pnpm install --no-frozen-lockfile
+            fi
+            ;;
+          yarn)
+            # Yarn 1 and Yarn 2+ spell "don't touch the lockfile" differently.
+            if [ "$(yarn --version | cut -d. -f1)" = "1" ]; then
+              if [ -f yarn.lock ]; then
+                yarn install --frozen-lockfile
+              else
+                yarn install
+              fi
+            elif [ -f yarn.lock ]; then
+              yarn install --immutable
+            else
+              yarn install --no-immutable
+            fi
+            ;;
+          bun)
+            if [ -f bun.lockb ] || [ -f bun.lock ]; then
+              bun install --frozen-lockfile
+            else
+              bun install
+            fi
+            ;;
+          npm)
+            if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+              npm ci --no-audit --no-fund
+            else
+              npm install --no-audit --no-fund
+            fi
+            ;;
+        esac
 
     - name: Plan
       if: inputs.command == 'plan'
