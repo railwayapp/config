@@ -182,10 +182,11 @@ runs:
       shell: bash
       env:
         RAILWAY_TOKEN: ${{ inputs.railway-token }}
+        ENVIRONMENT: ${{ inputs.environment }}
       run: |
         set -euo pipefail
-        if [ -n "${{ inputs.environment }}" ]; then
-          railway config plan --out "${{ inputs.plan-path }}" --environment "${{ inputs.environment }}"
+        if [ -n "$ENVIRONMENT" ]; then
+          railway config plan --out "${{ inputs.plan-path }}" --environment "$ENVIRONMENT"
         else
           railway config plan --out "${{ inputs.plan-path }}"
         fi
