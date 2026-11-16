@@ -15,6 +15,14 @@ inputs:
   railway-token:
     description: Railway project token with access to the target environment.
     required: true
+  environment:
+    description: >-
+      Environment name or ID to plan. Omit to use the token's environment.
+      A workspace token can target any environment in the project. Apply uses
+      the environment pinned in the plan, so this does not change an existing
+      workflow that leaves it empty.
+    required: false
+    default: ""
   cli-version:
     description: "@railway/cli version to install."
     required: false
@@ -174,7 +182,14 @@ runs:
       shell: bash
       env:
         RAILWAY_TOKEN: ${{ inputs.railway-token }}
-      run: railway config plan --out "${{ inputs.plan-path }}"
+        ENVIRONMENT: ${{ inputs.environment }}
+      run: |
+        set -euo pipefail
+        if [ -n "$ENVIRONMENT" ]; then
+          railway config plan --out "${{ inputs.plan-path }}" --environment "$ENVIRONMENT"
+        else
+          railway config plan --out "${{ inputs.plan-path }}"
+        fi
 
     - name: Upload pinned plan
       if: inputs.command == 'plan'
